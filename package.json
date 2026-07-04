@@ -1,0 +1,22 @@
+{
+  "name": "splitclaude",
+  "version": "0.1.0",
+  "description": "Per-machine Claude Code spend gauge: n-way account split, 5h session window + weekly window, statusline output with 50/80/100% warnings",
+  "bin": {
+    "splitclaude": "bin/splitclaude.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "tokens",
+    "usage",
+    "statusline"
+  ],
+  "license": "MIT"
+}
