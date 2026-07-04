@@ -1,32 +1,29 @@
 # SplitClaude
 
-Per-machine spend gauge for a Claude account shared across **n** machines.
+Keep a shared Claude account fair across multiple machines.
 
-One Claude account on two computers shares one usage limit, but neither
-machine can see the account-wide remainder — that lives on Anthropic's
-servers. What each machine *can* see is its own Claude Code session logs
-(`~/.claude/projects/**/*.jsonl`), which record every API response's model and
-token usage. SplitClaude reads those logs and answers one question:
+When one Claude account is used across multiple computers, everyone shares the same usage limits—but Claude only shows the total account usage, not how much each machine has contributed.
 
-> **Has this machine spent more than its 1/n share of the account's budget?**
+SplitClaude reads your local Claude Code logs and answers one simple question:
 
-It shows one gauge per account limit in your Claude Code statusline — mirroring
-the bars on Claude Code's `/usage` screen — and warns at 50 / 80 / 100% of
-*your share*:
+> **Have I used more than my share?**
+
+It adds lightweight usage gauges to your Claude Code status line, showing how close **this machine** is to its share of the account.
 
 ```
-5h ██░░░ 39% ↻1h03m │ wk ██░░░ 33% ↻1d20h │ fable ██░░░ 47% ↻1d20h │ 1/2 share
+5h ███░░ 61% ↻2h14m │ wk ██░░░ 43% ↻4d7h │ fable ██░░░ 47% ↻4d7h │ 1/2 share
 ```
+
+You'll get warnings at **50%, 80%, and 100%** of your share, so you know when it's time to let someone else take over.
 
 ## Install
 
 ```sh
-cd SplitClaude
-npm link          # puts `splitclaude` on your PATH
+npm install -g splitclaude
 splitclaude init
 ```
 
-Then add to `~/.claude/settings.json`:
+Add it to your Claude Code status line (`~/.claude/settings.json`):
 
 ```json
 "statusLine": {
@@ -35,102 +32,85 @@ Then add to `~/.claude/settings.json`:
 }
 ```
 
-Repeat on each machine (same `--n`, same budgets).
+Run the same setup on every machine that shares the account.
 
-## Commands
+### Already have a status line?
 
-| Command | What it does |
-|---|---|
-| `splitclaude init` | Interactive setup: n, three budgets, weekly reset anchor, notifications. Non-interactive flags: `--n 2 --weekly 527 --weekly-fable 192 --five-hour 57 --reset "mon 09:30" --no-notify` |
-| `splitclaude status` | Detailed report: every gauge, spend vs share, per-model cost breakdown |
-| `splitclaude statusline` | One-line ANSI gauges (what Claude Code renders) |
-| `splitclaude calibrate <id> [--pct N]` | Set one budget. `--pct N` uses the account % from `/usage` (recommended); without it, uses current spend × n (run at a cap-hit). ids: `session`, `weeklyAll`, `weeklyPremium` |
+Claude Code allows only one `statusLine` command, so chain both through a
+wrapper. Save this as `~/.claude/statusline.sh`:
 
-## How it works
+```sh
+#!/usr/bin/env bash
+# Claude Code passes session JSON on stdin; feed it to both commands.
+input="$(cat)"
+left="$(printf '%s' "$input" | your-existing-statusline-command)"
+right="$(printf '%s' "$input" | splitclaude statusline)"
+printf '%s  ·  %s' "$left" "$right"
+```
 
-**Cost, not tokens.** Machines may run different models (Opus on the desktop,
-Fable on the laptop), and raw token counts aren't comparable across models.
-Every log entry carries its own `message.model`, so each entry is converted to
-a USD-equivalent at that model's price (including cache-read/write
-multipliers). Budgets and gauges live in USD-equivalent.
+Make it executable and point Claude Code at it:
 
-**One gauge per account limit — matching `/usage`.** Anthropic enforces several
-quota bars at once, so SplitClaude renders one gauge for each:
+```sh
+chmod +x ~/.claude/statusline.sh
+```
 
-| Gauge | Window | Models counted |
-|---|---|---|
-| `5h` | fixed 5h grid slot | all |
-| `wk` | weekly | all |
-| `fable` | weekly | premium only (Fable / Mythos) |
+```json
+"statusLine": {
+  "type": "command",
+  "command": "bash ~/.claude/statusline.sh"
+}
+```
 
-The premium gauge exists because Anthropic caps premium-model usage separately
-and more tightly than overall usage — the same reason `/usage` shows both a
-"week (all models)" and a "week (Fable)" bar. Limits are defined in
-`src/limits.js`; adding a new cap (e.g. a per-model-family budget) is one entry.
+Replace `your-existing-statusline-command` with whatever your `statusLine` ran
+before.
 
-**Both window types run on one shared clock, split by n:**
+## What it tracks
 
-- **Weekly window** — anchored to a fixed weekly reset you configure from the
-  "resets …" text on Claude Code's `/usage` screen (e.g. `mon 09:30`, local
-  time). Crossing the anchor zeroes the gauges.
-- **5h slots** — a fixed grid ticking from the weekly anchor (Mon 09:30 →
-  09:30–14:30, 14:30–19:30, …; the final short slot of the week is clipped at
-  the next weekly reset). At each slot boundary the 5h gauge reads 0 again.
+SplitClaude mirrors the limits shown in Claude Code's `/usage`:
 
-Because both windows derive purely from the configured anchor, **every machine
-with the same config computes identical boundaries and refreshes its counter at
-the same instant** — no cross-machine sync, no drift, and no stale warning
-surviving a quota refresh.
-
-*Approximation note:* Anthropic's real 5h window is activity-anchored (it
-starts at the account's first message after idle), which no single machine can
-observe locally. The fixed grid trades that unobservable start for determinism;
-any mismatch is bounded within one slot. The **weekly** gauges are the ones
-that bite on Max plans, and those anchors are exact.
-
-**Warning state machine.** Fired thresholds are stored per gauge, keyed by
-*window id* (`~/.config/splitclaude/state.json`). A new 5h slot or a
-weekly-anchor crossing changes the id, which wipes that gauge's fired list — so
-each threshold fires exactly once per window, and a refreshed quota can never
-show a leftover warning. With `notify: true`, crossings also fire a desktop
-notification via `notify-send`.
+| Gauge | Tracks |
+| ------ | ------ |
+| `5h` | Current 5-hour session |
+| `wk` | Weekly usage |
+| `fable` | Weekly usage for premium models |
 
 ## Calibration
 
-Anthropic doesn't publish limits as dollar figures, so budgets are estimates.
-Two ways to set them accurately:
+Claude doesn't publish its actual limits, so SplitClaude estimates them.
 
-**From `/usage` percentages (recommended, no cap-hit needed).** Type `/usage`
-in Claude Code, read the percentage for a limit, and let the tool back out the
-budget from your current spend:
+The easiest way to improve accuracy is to calibrate while using the account from a single machine:
 
 ```sh
-splitclaude calibrate weeklyAll     --pct 16     # /usage: week (all) = 16%
-splitclaude calibrate weeklyPremium --pct 23     # /usage: week (Fable) = 23%
+splitclaude calibrate session       --pct 77
+splitclaude calibrate weeklyAll     --pct 22
+splitclaude calibrate weeklyPremium --pct 23
 ```
 
-Because `budget = spend ÷ (pct/100)` and, on a solo machine, your spend equals
-the account's spend, this is exact up to the percentage's rounding.
+You can recalibrate anytime to keep the estimates accurate.
 
-**At a cap-hit (fallback).** Work until the account actually blocks you, then:
+## Commands
 
-```sh
-splitclaude calibrate weeklyAll                  # budget = spend × n
-```
+| Command | Description |
+| ------- | ----------- |
+| `splitclaude init` | Configure your share and budgets |
+| `splitclaude status` | Detailed usage report |
+| `splitclaude statusline` | One-line status output |
+| `splitclaude calibrate` | Improve usage estimates |
+| `splitclaude help` | Show help |
 
-Either way: if the *other* machine was also burning quota in that window, the
-estimate is low — calibrate on a day only this machine is active.
+## How it works
 
-## Honest limitations
+- Reads your local Claude Code logs.
+- Estimates usage based on model pricing rather than tokens.
+- Works completely offline—no accounts, servers, or syncing.
+- Each machine keeps itself within its own share.
 
-- **Local-only by design.** Each machine caps itself at budget/n. If the other
-  machine is idle all week, your gauge still stops you at your share — that's
-  the intended behavior, not a bug.
-- **Cost-equivalent is a proxy.** Anthropic's real rate-limit accounting isn't
-  published token-for-token; cache reads especially may be weighted
-  differently. Calibration absorbs most of the error.
-- **Log retention.** Claude Code prunes logs after `cleanupPeriodDays`
-  (default ~30 days) — plenty for 5h/weekly windows, but don't build monthly
-  stats on this.
-- Pricing table lives in `src/pricing.js`; unknown models fall back to
-  top-tier pricing (gauge errs toward warning early).
+## Requirements
+
+- Node.js 18+
+- Claude Code
+- `notify-send` (optional, for desktop notifications)
+
+## License
+
+MIT
