@@ -1,6 +1,6 @@
 {
   "name": "splitclaude",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Per-machine usage gauge for a Claude Code account shared across n machines: 5h session + weekly + premium gauges in your statusline, with 50/80/100% share warnings.",
   "bin": {
     "splitclaude": "bin/splitclaude.js"
